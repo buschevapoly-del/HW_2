@@ -1,0 +1,428 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Titanic Binary Classifier — TensorFlow.js (final responsive build)</title>
+
+<link rel="preconnect" href="https://cdn.jsdelivr.net" />
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest"></script>
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+
+<style>
+  :root{
+    --bg:#0b0f17; --panel:#101728; --ink:#e9edf6; --muted:#9fb0c8;
+    --card:#111b30; --border:#1e2a44; --pill:#13223c;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:linear-gradient(180deg,#0a0f1a,#0b0f17);color:var(--ink);font-family:Inter,system-ui,Segoe UI,Roboto,sans-serif}
+  .wrap{max-width:1100px;margin:24px auto;padding:0 16px}
+  h1{margin:0 0 12px}
+  .panel{background:var(--panel);border:1px solid var(--border);border-radius:16px;padding:16px;margin:14px 0}
+  .row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+  label{font-size:.95rem;color:var(--muted)}
+  input[type=file],button,select{background:#0f1628;border:1px solid var(--border);color:var(--ink);padding:8px 12px;border-radius:10px}
+  button{cursor:pointer} button.primary{background:#1a2847;border-color:#223255}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .kpis span{display:inline-block;background:var(--pill);border:1px solid var(--border);padding:6px 10px;border-radius:999px;margin:6px 8px 0 0;color:var(--muted)}
+  pre{white-space:pre-wrap;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:12px;min-height:84px}
+  table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+  th,td{padding:6px 8px;border-bottom:1px solid var(--border);font-size:.92rem}
+  th{color:var(--muted);text-align:left}
+  .small{font-size:.9rem;color:var(--muted)}
+  canvas{background:var(--card);border:1px solid var(--border);border-radius:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Titanic Binary Classifier — TensorFlow.js</h1>
+  <div class="small">Upload Kaggle <code>train.csv</code> / <code>test.csv</code> → Preprocess → Build → Train → Evaluate (ROC/AUC) → Predict/Export. Fully in the browser.</div>
+
+  <div class="panel">
+    <h2>Data Load</h2>
+    <div class="row">
+      <label>train.csv <input id="trainFile" type="file" accept=".csv" /></label>
+      <label>test.csv <input id="testFile" type="file" accept=".csv" /></label>
+      <button id="btnLoad" class="primary">Load Files</button>
+    </div>
+    <div class="kpis">
+      <span>Train rows: <b id="kTrain">–</b></span>
+      <span>Test rows: <b id="kTest">–</b></span>
+      <span>Missing % (train): <b id="kMiss">–</b></span>
+    </div>
+    <div class="small" style="margin:8px 0">Preview</div>
+    <div id="previewTable"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Preprocessing</h2>
+    <div class="row">
+      <label><input id="featFamily" type="checkbox" checked /> Add FamilySize = SibSp + Parch + 1</label>
+      <label><input id="featAlone"  type="checkbox" checked /> Add IsAlone = (FamilySize == 1)</label>
+      <button id="btnPre" class="primary">Run Preprocessing</button>
+    </div>
+    <div class="small" style="margin-top:8px">Impute Age = median; Embarked = mode; Standardize Age/Fare; One-hot Sex/Pclass/Embarked.</div>
+    <pre id="preInfo"></pre>
+  </div>
+
+  <div class="panel">
+    <h2>Model</h2>
+    <div class="row">
+      <button id="btnBuild" class="primary">Build Model</button>
+      <button id="btnSummary">Show Summary</button>
+    </div>
+    <div class="small" style="margin:8px 0">Architecture: Dense(16, relu) → Dense(1, sigmoid). Compile: adam + binaryCrossentropy + accuracy.</div>
+    <pre id="modelSummary"></pre>
+  </div>
+
+  <div class="panel">
+    <h2>Training</h2>
+    <div class="row">
+      <button id="btnTrain" class="primary">Train (40 epochs, batch 16)</button>
+      <button id="btnStop">Early Stop</button>
+    </div>
+    <div class="small" style="margin-top:8px">80/20 stratified split; early stopping with best-weight restore. Training log below keeps the page responsive.</div>
+    <pre id="trainLog"></pre>
+  </div>
+
+  <div class="panel">
+    <h2>Metrics</h2>
+    <div class="row">
+      <label>Threshold: <b id="thVal">0.50</b></label>
+      <input id="thSlider" type="range" min="0" max="1" step="0.01" value="0.5" style="width:260px" />
+    </div>
+    <div class="grid2">
+      <div>
+        <canvas id="rocCanvas" width="520" height="300"></canvas>
+        <div class="small" id="aucText" style="margin-top:6px"></div>
+      </div>
+      <div>
+        <table>
+          <thead><tr><th></th><th>Pred 1</th><th>Pred 0</th></tr></thead>
+          <tbody><tr><th>True 1</th><td id="cmTP">–</td><td id="cmFN">–</td></tr>
+                 <tr><th>True 0</th><td id="cmFP">–</td><td id="cmTN">–</td></tr></tbody>
+        </table>
+        <pre id="prf"></pre>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Prediction & Export</h2>
+    <div class="row">
+      <button id="btnPredict" class="primary">Predict test.csv</button>
+      <button id="btnSub">Download submission.csv</button>
+      <button id="btnProb">Download probabilities.csv</button>
+      <button id="btnSaveModel">Save model</button>
+    </div>
+    <pre id="predInfo"></pre>
+  </div>
+</div>
+
+<script>
+/* ---------- State & schema ---------- */
+const state = {
+  rawTrain: [], rawTest: [],
+  pre: null,
+  xsTrain: null, ysTrain: null,
+  xsVal: null,   ysVal: null,
+  model: null,
+  valProbs: null, testProbs: null,
+  thresh: 0.5
+};
+const SCHEMA = { target:'Survived', id:'PassengerId', cols:['Pclass','Sex','Age','SibSp','Parch','Fare','Embarked'] };
+const EXPECTED_MIN = ['PassengerId','Survived','Pclass','Sex','Age','SibSp','Parch','Fare','Embarked'];
+const el=id=>document.getElementById(id);
+
+/* ---------- Safe backend (CPU) to avoid GPU stalls; ready ---------- */
+(async () => {
+  try { await tf.setBackend('cpu'); } catch {}
+  await tf.ready();
+})();
+
+/* ---------- CSV parsing (robust) ---------- */
+function parseWithPapa(file, delimiter, quoteChar){
+  return new Promise((resolve,reject)=>{
+    Papa.parse(file,{header:true,dynamicTyping:true,skipEmptyLines:'greedy',delimiter,quoteChar,
+      complete:r=>resolve(r.data), error:reject});
+  });
+}
+function roughMissingPct(rows){
+  if(!rows.length) return 100;
+  const cols=Object.keys(rows[0]); let miss=0, total=rows.length*cols.length;
+  for(const r of rows){ for(const c of cols){ const v=r[c]; if(v===''||v==null||v===undefined) miss++; } }
+  return +(100*miss/total).toFixed(1);
+}
+function scoreParsed(rows,d,q){
+  if(!rows.length) return {score:-1e9};
+  const S=new Set(Object.keys(rows[0]||{}));
+  let have=0; for(const c of EXPECTED_MIN) if(S.has(c)) have++;
+  const expectedHit = have/EXPECTED_MIN.length;
+  const widthCnt={}; for(const r of rows){ const w=Object.keys(r).length; widthCnt[w]=(widthCnt[w]||0)+1; }
+  const modeW = Object.entries(widthCnt).sort((a,b)=>b[1]-a[1])[0];
+  const consistency = modeW? modeW[1]/rows.length : 0;
+  const missPenalty = -0.2*(roughMissingPct(rows)/100);
+  return {score: 3*expectedHit + 2*consistency + missPenalty};
+}
+async function robustParseCSV(file){
+  const delims=[',',';','\t'], quotes=['"',"\'"];
+  let best={score:-Infinity,rows:[],cfg:null};
+  for(const d of delims) for(const q of quotes){
+    const rows=await parseWithPapa(file,d,q);
+    const sc=scoreParsed(rows,d,q);
+    if(sc.score>best.score) best={score:sc.score,rows,cfg:{delimiter:d,quoteChar:q}};
+  }
+  return best;
+}
+const normalizeRow=row=>{
+  const o={}; for(const [k,v] of Object.entries(row)){
+    if(v==='') o[k]=null; else if(typeof v==='string') {const t=v.trim(); o[k]=t===''?null:t;} else o[k]=v;
+  } return o;
+};
+function previewTable(rows, limit=8){
+  if(!rows.length){ el('previewTable').innerHTML=''; return; }
+  const cols=Object.keys(rows[0]);
+  const head='<thead><tr>'+cols.map(c=>`<th>${c}</th>`).join('')+'</tr></thead>';
+  const body='<tbody>'+rows.slice(0,limit).map(r=>'<tr>'+cols.map(c=>`<td>${r[c]??''}</td>`).join('')+'</tr>').join('')+'</tbody>';
+  el('previewTable').innerHTML=`<table>${head}${body}</table>`;
+}
+
+/* ---------- Preprocessing ---------- */
+const median=a=>{const b=a.filter(v=>v!=null&&!Number.isNaN(+v)).map(Number).sort((x,y)=>x-y); if(!b.length) return null; const m=Math.floor(b.length/2); return b.length%2?b[m]:(b[m-1]+b[m])/2;};
+const mode=a=>{const m=new Map();let best=null,cnt=0;for(const v of a){if(v==null||v==='')continue;const c=(m.get(v)||0)+1;m.set(v,c);if(c>cnt){cnt=c;best=v;}}return best;};
+const oneHot=(v,cats)=>{const r=new Array(cats.length).fill(0);const i=cats.indexOf(v);if(i>=0)r[i]=1;return r;};
+const mean=a=>{const b=a.filter(Number.isFinite); return b.length? b.reduce((s,x)=>s+x,0)/b.length : 0;};
+const sd=a=>{const b=a.filter(Number.isFinite); if(b.length<2) return 0; const m=mean(b); return Math.sqrt(b.reduce((s,x)=>s+(x-m)**2,0)/(b.length-1));};
+const finite=(x,def=0)=>Number.isFinite(x)?x:def;
+
+function buildPreprocessor(train){
+  const ageMed = Number.isFinite(median(train.map(r=>r.Age))) ? median(train.map(r=>r.Age)) : 30;
+  const embMode = mode(train.map(r=>r.Embarked)) ?? 'S';
+  const sexCats=['female','male'], pclassCats=[1,2,3], embCats=['C','Q','S','UNKNOWN'];
+
+  const ageVals = train.map(r=>finite((r.Age!=null&&!Number.isNaN(+r.Age))?+r.Age:ageMed,ageMed));
+  const fareVals= train.map(r=>finite((r.Fare!=null&&!Number.isNaN(+r.Fare))?+r.Fare:0,0));
+  const muA=mean(ageVals), sdA=sd(ageVals), muF=mean(fareVals), sdF=sd(fareVals);
+
+  const useFamily = el('featFamily').checked, useAlone = el('featAlone').checked;
+
+  const base=(r)=>{
+    const age=(r.Age!=null&&!Number.isNaN(+r.Age))?+r.Age:ageMed;
+    const emb=(r.Embarked==null||r.Embarked==='')?'UNKNOWN':r.Embarked;
+    const fare=(r.Fare!=null&&!Number.isNaN(+r.Fare))?+r.Fare:0;
+    const fam=(+r.SibSp||0)+(+r.Parch||0)+1, alone=(fam===1)?1:0;
+    const ageZ=sdA? (age-muA)/sdA : 0, fareZ=sdF? (fare-muF)/sdF : 0;
+    let f=[ageZ,fareZ,...oneHot(r.Sex,sexCats),...oneHot(+r.Pclass,pclassCats),...oneHot(emb,embCats)];
+    if(useFamily) f.push(fam); if(useAlone) f.push(alone);
+    return f.map(x=>finite(+x,0));
+  };
+  const FEAT = base(train[0]||{}).length;
+
+  return { ageMed, embMode, sexCats, pclassCats, embCats, muA, sdA, muF, sdF, useFamily, useAlone, featLen:FEAT,
+    mapRow:r=>{const v=base(r); if(v.length!==FEAT){ if(v.length<FEAT) v.push(...Array(FEAT-v.length).fill(0)); else v.length=FEAT; } return v;}
+  };
+}
+function tensorize(rows, pre){
+  const X=[], Y=[];
+  for(const r of rows){ const f=pre.mapRow(r); if(f.every(Number.isFinite)){ X.push(f); if('Survived' in r) Y.push(+r.Survived); } }
+  if(!X.length) throw new Error('No valid rows after preprocessing.');
+  const xs=tf.tensor2d(X,[X.length,pre.featLen],'float32');
+  let ys=null; if(Y.length) ys=tf.tensor2d(Y,[Y.length,1],'float32'); // (N,1)
+  return {xs, ys, nFeat:pre.featLen};
+}
+function stratifiedSplit(rows, r=0.2){
+  const z=rows.filter(x=>+x.Survived===0), o=rows.filter(x=>+x.Survived===1);
+  const split=g=>{const a=g.slice(); tf.util.shuffle(a); const n=Math.max(1,Math.floor(a.length*r)); return {val:a.slice(0,n), tr:a.slice(n)};};
+  const a=split(z), b=split(o); const train=a.tr.concat(b.tr), val=a.val.concat(b.val);
+  tf.util.shuffle(train); tf.util.shuffle(val); return {train,val};
+}
+
+/* ---------- Model ---------- */
+function buildModel(inputDim){
+  const m=tf.sequential();
+  m.add(tf.layers.dense({units:16,activation:'relu',inputShape:[inputDim]}));
+  m.add(tf.layers.dense({units:1,activation:'sigmoid'}));
+  m.compile({optimizer:'adam',loss:'binaryCrossentropy',metrics:['accuracy']});
+  return m;
+}
+const modelSummaryText = m => { const lines=[]; m.summary(undefined, undefined, s=>lines.push(s)); return lines.join('\n'); };
+
+/* ---------- Metrics & plots ---------- */
+function rocPoints(yTrue, yProb, steps=200){
+  const T=[]; for(let i=0;i<=steps;i++) T.push(i/steps);
+  const pts=T.map(th=>{let TP=0,FP=0,TN=0,FN=0; for(let i=0;i<yTrue.length;i++){const y=yTrue[i],p=yProb[i]>=th?1:0; if(y===1&&p===1)TP++; else if(y===0&&p===1)FP++; else if(y===0&&p===0)TN++; else FN++;} const TPR=TP/(TP+FN||1), FPR=FP/(FP+TN||1); return {x:FPR,y:TPR,th};});
+  const s=pts.slice().sort((a,b)=>a.x-b.x); let auc=0; for(let i=1;i<s.length;i++){const a=s[i-1],b=s[i]; auc+=(b.x-a.x)*(a.y+b.y)/2;}
+  return {points:s, auc};
+}
+function drawROC(canvas, pts){
+  const ctx=canvas.getContext('2d'); const W=canvas.width, H=canvas.height;
+  ctx.clearRect(0,0,W,H); ctx.fillStyle='#0f1628'; ctx.fillRect(0,0,W,H);
+  ctx.strokeStyle='#233350'; ctx.lineWidth=1; for(let i=0;i<=5;i++){const x=i/5; ctx.beginPath(); ctx.moveTo(40+x*(W-60), H-30); ctx.lineTo(40+x*(W-60), 20); ctx.stroke();}
+  for(let i=0;i<=5;i++){const y=i/5; ctx.beginPath(); ctx.moveTo(40, 20+y*(H-50)); ctx.lineTo(W-20, 20+y*(H-50)); ctx.stroke();}
+  ctx.strokeStyle='#8aa3ff'; ctx.lineWidth=2; ctx.beginPath();
+  pts.forEach((p,i)=>{ const x=40+p.x*(W-60), y=H-30-p.y*(H-50); if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y); });
+  ctx.stroke();
+}
+
+/* ---------- Early stop with best-weight restore (and yielding) ---------- */
+let stopFlag=false;
+function earlyStopWithRestore(patience=5, monitor='val_loss'){
+  let best=Infinity, wait=0, snapshot=null;
+  return new tf.CustomCallback({
+    onBatchEnd: async () => { await new Promise(r=>setTimeout(r,0)); }, // yield often
+    onEpochEnd: async (_epoch, logs) => {
+      await tf.nextFrame(); // let UI breathe
+      const cur=logs?.[monitor];
+      if(cur!=null){
+        if(cur<best-1e-12){ best=cur; wait=0; if(snapshot) snapshot.forEach(t=>t.dispose()); snapshot=state.model.getWeights().map(w=>w.clone()); }
+        else if(++wait>=patience){ if(snapshot){ state.model.setWeights(snapshot); snapshot=null; } state.model.stopTraining=true; }
+      }
+      if(stopFlag) state.model.stopTraining=true;
+    }
+  });
+}
+
+/* ---------- UI handlers ---------- */
+async function onLoadFiles(){
+  try{
+    const fT=el('trainFile')?.files?.[0], fX=el('testFile')?.files?.[0];
+    if(!fT){ alert('Please choose train.csv'); return; }
+    const best=await robustParseCSV(fT);
+    state.rawTrain=best.rows.map(normalizeRow);
+    if(fX){ const t=await parseWithPapa(fX,best.cfg.delimiter,best.cfg.quoteChar); state.rawTest=t.map(normalizeRow); } else state.rawTest=[];
+    el('kTrain').textContent=state.rawTrain.length; el('kTest').textContent=state.rawTest.length||'—'; el('kMiss').textContent=roughMissingPct(state.rawTrain)+'%';
+    previewTable(state.rawTrain);
+  }catch(e){ console.error(e); alert('Failed to load CSV: '+(e?.message||e)); }
+}
+function onPreprocess(){
+  try{
+    if(!state.rawTrain.length){ alert('Load train.csv first'); return; }
+    state.pre=buildPreprocessor(state.rawTrain);
+    const {train,val}=stratifiedSplit(state.rawTrain,0.2);
+    const tT=tensorize(train,state.pre), tV=tensorize(val,state.pre);
+    state.xsTrain=tT.xs; state.ysTrain=tT.ys; state.xsVal=tV.xs; state.ysVal=tV.ys;
+    el('preInfo').textContent=[
+      `Features: ${tT.nFeat}`,
+      `Train: ${state.xsTrain.shape} | Val: ${state.xsVal.shape}`,
+      `Impute Age median=${state.pre.ageMed} | Embarked mode=${state.pre.embMode}`,
+      `One-hot: Sex, Pclass, Embarked | Engineered: FamilySize=${state.pre.useFamily}, IsAlone=${state.pre.useAlone}`
+    ].join('\n');
+  }catch(e){ console.error(e); alert('Preprocessing failed: '+(e?.message||e)); }
+}
+function onBuild(){
+  try{
+    if(!state.xsTrain){ alert('Run Preprocessing first'); return; }
+    state.model=buildModel(state.xsTrain.shape[1]);
+    el('modelSummary').textContent='Model built. Click "Show Summary" to view layers.';
+  }catch(e){ console.error(e); alert('Build failed: '+(e?.message||e)); }
+}
+function onSummary(){
+  try{
+    if(!state.model){ alert('Build the model first'); return; }
+    el('modelSummary').textContent=modelSummaryText(state.model);
+  }catch(e){ console.error(e); alert('Summary failed: '+(e?.message||e)); }
+}
+
+async function onTrain(){
+  try{
+    if(!state.model){ alert('Build the model first'); return; }
+    stopFlag=false; el('trainLog').textContent='';
+    const cb = earlyStopWithRestore(5,'val_loss');
+    await state.model.fit(state.xsTrain, state.ysTrain, {
+      epochs:40, batchSize:16,
+      validationData:[state.xsVal, state.ysVal],
+      callbacks: [{
+        onEpochEnd: async (ep, logs)=>{
+          el('trainLog').textContent += `epoch ${ep+1}: loss=${logs.loss.toFixed(4)} val_loss=${logs.val_loss.toFixed(4)} acc=${(logs.acc??logs.accuracy??0).toFixed(4)}\n`;
+          await cb.onEpochEnd?.(ep, logs);
+        },
+        onBatchEnd: async (b, logs)=>{ await cb.onBatchEnd?.(b, logs); }
+      }]
+    });
+
+    const valPred = tf.tidy(()=> state.model.predict(state.xsVal).dataSync());
+    state.valProbs = Float32Array.from(valPred);
+
+    const yTrue = Array.from(state.ysVal.dataSync()).map(v=>+v);
+    const {points, auc} = rocPoints(yTrue, state.valProbs, 200);
+    drawROC(el('rocCanvas'), points);
+    el('aucText').textContent = `AUC = ${auc.toFixed(4)}`;
+    updateThreshold(state.thresh);
+  }catch(e){ console.error(e); alert('Training failed: '+(e?.message||e)); }
+}
+function onStop(){ stopFlag=true; alert('Early stop requested (will stop after this epoch).'); }
+
+function confusionStats(yTrue, yProb, th){
+  let TP=0,FP=0,TN=0,FN=0;
+  for(let i=0;i<yTrue.length;i++){ const y=yTrue[i],p=yProb[i]>=th?1:0;
+    if(y===1&&p===1)TP++; else if(y===0&&p===1)FP++; else if(y===0&&p===0)TN++; else FN++;
+  }
+  const prec=TP/(TP+FP||1), rec=TP/(TP+FN||1), f1=(2*prec*rec)/((prec+rec)||1);
+  return {TP,FP,TN,FN,prec,rec,f1};
+}
+function updateThreshold(th){
+  el('thVal').textContent=(+th).toFixed(2);
+  if(state.valProbs==null) return;
+  const yTrue=Array.from(state.ysVal.dataSync()).map(v=>+v);
+  const st=confusionStats(yTrue,state.valProbs,+th);
+  el('cmTP').textContent=st.TP; el('cmFN').textContent=st.FN;
+  el('cmFP').textContent=st.FP; el('cmTN').textContent=st.TN;
+  el('prf').textContent=`Precision: ${(st.prec*100).toFixed(2)}%\nRecall: ${(st.rec*100).toFixed(2)}%\nF1: ${st.f1.toFixed(4)}`;
+  state.thresh=+th;
+}
+
+async function onPredict(){
+  try{
+    if(!state.model){ alert('Train the model first'); return; }
+    if(!state.rawTest.length){ alert('Load test.csv'); return; }
+    const probs=tf.tidy(()=>{
+      const X=state.rawTest.map(state.pre.mapRow);
+      const xs=tf.tensor2d(X,[X.length,state.pre.featLen],'float32');
+      const out=state.model.predict(xs).dataSync(); xs.dispose(); return out;
+    });
+    state.testProbs=Float32Array.from(probs);
+    el('predInfo').textContent=`Predicted ${state.rawTest.length} rows. You can now download CSVs.`;
+  }catch(e){ console.error(e); alert('Prediction failed: '+(e?.message||e)); }
+}
+function downloadCSV(name, rows){
+  if(!rows.length) return;
+  const cols=Object.keys(rows[0]); const esc=v=>{ if(v==null) return ''; const s=String(v); return /[",\n]/.test(s)? '"'+s.replace(/"/g,'""')+'"' : s; };
+  const csv=[cols.join(',')].concat(rows.map(r=>cols.map(c=>esc(r[c])).join(','))).join('\n');
+  const blob=new Blob([csv],{type:'text/csv;charset=utf-8;'}); const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download=name; a.click(); URL.revokeObjectURL(url);
+}
+function onDownloadSubmission(){
+  try{
+    if(state.testProbs==null){ alert('Run Predict first'); return; }
+    const out=state.rawTest.map((r,i)=>({PassengerId:r[SCHEMA.id], Survived:(state.testProbs[i]>=state.thresh?1:0)}));
+    downloadCSV('submission.csv', out);
+  }catch(e){ console.error(e); alert('Download failed: '+(e?.message||e)); }
+}
+function onDownloadProbs(){
+  try{
+    if(state.testProbs==null){ alert('Run Predict first'); return; }
+    const out=state.rawTest.map((r,i)=>({PassengerId:r[SCHEMA.id], ProbSurvived:state.testProbs[i]}));
+    downloadCSV('probabilities.csv', out);
+  }catch(e){ console.error(e); alert('Download failed: '+(e?.message||e)); }
+}
+async function onSaveModel(){
+  try{ if(!state.model){ alert('Train the model first'); return; } await state.model.save('downloads://titanic-tfjs'); }
+  catch(e){ console.error(e); alert('Save failed: '+(e?.message||e)); }
+}
+
+/* ---------- Wire up ---------- */
+window.addEventListener('DOMContentLoaded', ()=>{
+  el('btnLoad').addEventListener('click', onLoadFiles);
+  el('btnPre').addEventListener('click', onPreprocess);
+  el('btnBuild').addEventListener('click', onBuild);
+  el('btnSummary').addEventListener('click', onSummary);
+  el('btnTrain').addEventListener('click', onTrain);
+  el('btnStop').addEventListener('click', onStop);
+  el('thSlider').addEventListener('input', e=>updateThreshold(+e.target.value));
+  el('btnPredict').addEventListener('click', onPredict);
+  el('btnSub').addEventListener('click', onDownloadSubmission);
+  el('btnProb').addEventListener('click', onDownloadProbs);
+  el('btnSaveModel').addEventListener('click', onSaveModel);
+});
+</script>
+</body>
+</html>
